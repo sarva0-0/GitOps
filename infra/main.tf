@@ -97,3 +97,14 @@ resource "aws_instance" "workers" {
   key_name               = var.key_name
   tags = { Name = "k8s-worker-${count.index + 1}" }
 }
+
+resource "aws_eip" "master" {
+  instance = aws_instance.master.id
+  domain   = "vpc"
+}
+
+resource "aws_eip" "workers" {
+  count    = 2
+  instance = aws_instance.workers[count.index].id
+  domain   = "vpc"
+}
