@@ -19,4 +19,4 @@ spec:
             - containerPort: 80
           env:
             - name: REACT_APP_API_URL
-              value: http://100.31.205.158:30001
+              value: http://54.84.239.147:30001
