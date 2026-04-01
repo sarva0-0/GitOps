@@ -4,6 +4,7 @@
 > flows through Git automatically. No manual deployments. No clicking in consoles.
 > Git is the single source of truth.
 
+---
 
 ## What is GitOps?
 
@@ -46,39 +47,41 @@ Total human involvement after the push: zero.
 ---
 
 ## Architecture
-```Developer
-│
-▼
+```
+Developer
+    │
+    ▼
 GitHub (source of truth)
-│
-├── infra/          ← Terraform reads this to provision AWS infra
-├── k8s/            ← ArgoCD watches this to sync to the cluster
-├── backend/        ← Express API source code
-├── frontend/       ← React frontend source code
-└── .github/        ← GitHub Actions pipeline lives here
-│
-▼
+    │
+    ├── infra/          ← Terraform reads this to provision AWS infra
+    ├── k8s/            ← ArgoCD watches this to sync to the cluster
+    ├── backend/        ← Express API source code
+    ├── frontend/       ← React frontend source code
+    └── .github/        ← GitHub Actions pipeline lives here
+    │
+    ▼
 GitHub Actions (CI)
-│
-├── Terraform: create/update EC2 instances if infra/ changed
-├── Docker: build backend + frontend images
-├── ECR: push images tagged with commit SHA
-└── Git: update k8s/ manifests with new image tag, commit back
-│
-▼
+    │
+    ├── Terraform: create/update EC2 instances if infra/ changed
+    ├── Docker: build backend + frontend images
+    ├── ECR: push images tagged with commit SHA
+    └── Git: update k8s/ manifests with new image tag, commit back
+    │
+    ▼
 ArgoCD (CD) — watching k8s/ in this repo
-│
-└── Syncs any manifest change to the K8s cluster automatically
-│
-▼
+    │
+    └── Syncs any manifest change to the K8s cluster automatically
+    │
+    ▼
 Kubernetes Cluster (3 EC2 nodes on AWS)
-│
-├── backend pods (2 replicas)
-├── frontend pods (2 replicas)
-└── mongo pod (1 replica, hostPath storage)
-│
-▼
+    │
+    ├── backend pods (2 replicas)
+    ├── frontend pods (2 replicas)
+    └── mongo pod (1 replica, hostPath storage)
+    │
+    ▼
 Prometheus + Grafana — watching the cluster metrics
+```
 
 ---
 
@@ -100,7 +103,9 @@ Prometheus + Grafana — watching the cluster metrics
 
 ---
 
-## Repo StructureGitOps/
+## Repo Structure
+```
+GitOps/
 ├── backend/                  # Express API
 │   ├── server.js             # All routes — GET/POST/PATCH/DELETE /services
 │   ├── package.json
@@ -126,18 +131,21 @@ Prometheus + Grafana — watching the cluster metrics
 ├── monitoring/
 │   └── prometheus-values.yaml
 └── .github/
-└── workflows/
-├── ci.yml            # Main pipeline — triggers on push to main
-└── infra.yml         # Terraform only — manual trigger
+    └── workflows/
+        ├── ci.yml            # Main pipeline — triggers on push to main
+        └── infra.yml         # Terraform only — manual trigger
+```
 
 ---
 
 ## How to Run the Pipeline
 
 Push any change to `main`:
-```bashgit add .
+```bash
+git add .
 git commit -m "your change"
 git push origin main
+```
 
 Watch it at: `github.com/sarva0-0/GitOps/actions`
 
@@ -157,9 +165,11 @@ EBS volume: 20GB per node
 
 **ECR token note:** The ECR auth token expires every 12 hours.
 On cluster restart, refresh it on all 3 nodes:
-```bashTOKEN=$(aws ecr get-login-password --region us-east-1)
-sudo sed -i "s|password = ".*"|password = "$TOKEN"|" /etc/containerd/config.toml
+```bash
+TOKEN=$(aws ecr get-login-password --region us-east-1)
+sudo sed -i "s|password = \".*\"|password = \"$TOKEN\"|" /etc/containerd/config.toml
 sudo systemctl restart containerd
+```
 
 ---
 
