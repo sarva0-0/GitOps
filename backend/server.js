@@ -10,6 +10,11 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/notes')
 
 const Note = mongoose.model('Note', { title: String, body: String })
 
+// Version endpoint — added in end-to-end verify
+app.get('/version', (req, res) => {
+  res.json({ version: 'v2', status: 'live' })
+})
+
 app.get('/notes', async (req, res) => {
   res.json(await Note.find())
 })
