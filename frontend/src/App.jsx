@@ -11,7 +11,6 @@ const STATUS_META = {
 
 const STATUSES = Object.keys(STATUS_META);
 
-// ── tiny fetch helpers ──────────────────────────────────────────────────────
 const apiFetch = (path, opts = {}) =>
   fetch(`${API}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -21,7 +20,6 @@ const apiFetch = (path, opts = {}) =>
     return r.json();
   });
 
-// ── timestamp formatter ─────────────────────────────────────────────────────
 function timeAgo(iso) {
   const diff = Date.now() - new Date(iso).getTime();
   const s = Math.floor(diff / 1000);
@@ -33,7 +31,6 @@ function timeAgo(iso) {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
 export default function App() {
   const [services,    setServices]    = useState([]);
   const [loading,     setLoading]     = useState(true);
@@ -43,10 +40,9 @@ export default function App() {
   const [newNote,     setNewNote]     = useState("");
   const [newStatus,   setNewStatus]   = useState("operational");
   const [submitting,  setSubmitting]  = useState(false);
-  const [editNote,    setEditNote]    = useState({}); // { [id]: draft }
-  const [tick,        setTick]        = useState(0);  // forces timestamp re-render
+  const [editNote,    setEditNote]    = useState({}); 
+  const [tick,        setTick]        = useState(0);  
 
-  // re-render timestamps every 30s
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 30_000);
     return () => clearInterval(id);
@@ -66,11 +62,10 @@ export default function App() {
 
   useEffect(() => {
     fetchServices();
-    const id = setInterval(fetchServices, 15_000); // poll every 15s
+    const id = setInterval(fetchServices, 15_000); 
     return () => clearInterval(id);
   }, [fetchServices]);
 
-  // ── derived system health ─────────────────────────────────────────────────
   const allOk =
     services.length > 0 && services.every((s) => s.status === "operational");
   const hasOutage    = services.some((s) => s.status === "outage");
@@ -89,7 +84,6 @@ export default function App() {
     ? "✦ Partial Degradation"
     : "✦ Maintenance in Progress";
 
-  // ── CRUD ──────────────────────────────────────────────────────────────────
   async function handleAddService(e) {
     e.preventDefault();
     if (!newName.trim()) return;
@@ -110,14 +104,13 @@ export default function App() {
   }
 
   async function handleStatusChange(id, status) {
-    // optimistic update — UI responds instantly, PATCH fires in background
     setServices((prev) =>
       prev.map((s) => (s._id === id ? { ...s, status, updatedAt: new Date().toISOString() } : s))
     );
     try {
       await apiFetch(`/services/${id}`, { method: "PATCH", body: JSON.stringify({ status }) });
     } catch (e) {
-      fetchServices(); // revert on error
+      fetchServices(); 
     }
   }
 
@@ -143,7 +136,6 @@ export default function App() {
     }
   }
 
-  // ── render ─────────────────────────────────────────────────────────────────
   return (
     <>
       <style>{`
