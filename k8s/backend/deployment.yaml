@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: 740186512853.dkr.ecr.us-east-1.amazonaws.com/gitops-backend:f924c73f571cc4c5ea3991ee749f3574ed68a1ca
+          image: 740186512853.dkr.ecr.us-east-1.amazonaws.com/gitops-backend:e527e300a693285c52e3c5b017ce15cdb3478cc7
           ports:
             - containerPort: 5000
           env:
