@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 
-const API = process.env.REACT_APP_API_URL || "http://localhost:5000";
+const API = "http://54.84.239.147:30001";
 
 const STATUS_META = {
   operational:  { color: "#06D6A0", label: "Operational",  glow: "rgba(6,214,160,0.35)"  },
