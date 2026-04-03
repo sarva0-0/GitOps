@@ -101,14 +101,13 @@ jobs:
           git push
 
       - name: Log deployment to DeployBoard
-        if: always()   # runs even if prior steps failed — so failures are recorded too
+        if: always()
         run: |
           STATUS="success"
           if [ "${{ job.status }}" != "success" ]; then
             STATUS="failed"
           fi
 
-          # Calculate duration from job start (GitHub provides this via context)
           curl -s -X POST http://54.84.239.147:30001/deployments \
             -H "Content-Type: application/json" \
             -d '{
