@@ -1,98 +1,98 @@
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
+const express = require("express");
+const mongoose = require("mongoose");
+const cors = require("cors");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ── MongoDB connection ──────────────────────────────────────────────────────
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/statusboard';
+const MONGO_URI = process.env.MONGO_URI || "mongodb://mongo:27017/deployboard";
 
-mongoose
-  .connect(MONGO_URI)
-  .then(() => console.log('MongoDB connected:', MONGO_URI))
-  .catch((err) => console.error('MongoDB connection error:', err));
+mongoose.connect(MONGO_URI).then(() => console.log("MongoDB connected"));
 
-// ── Service model ───────────────────────────────────────────────────────────
-const serviceSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: true,
-  },
-  status: {
-    type: String,
-    enum: ['operational', 'degraded', 'outage', 'maintenance'],
-    default: 'operational',
-  },
-  note: {
-    type: String,
-    default: '',
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now,
-  },
+// ── Schema ──────────────────────────────────────────────────────────────────
+const deploymentSchema = new mongoose.Schema({
+  service:     { type: String, required: true },
+  environment: { type: String, enum: ["production", "staging", "dev"], required: true },
+  sha:         { type: String, required: true },
+  deployer:    { type: String, required: true },
+  status:      { type: String, enum: ["success", "failed", "in-progress"], required: true },
+  duration:    { type: Number },           // seconds
+  branch:      { type: String },
+  message:     { type: String },           // commit message
+  timestamp:   { type: Date, default: Date.now },
 });
 
-const Service = mongoose.model('Service', serviceSchema);
+const Deployment = mongoose.model("Deployment", deploymentSchema);
 
-// ── Routes ──────────────────────────────────────────────────────────────────
+// ── Routes ───────────────────────────────────────────────────────────────────
 
-// GET /services — return all services sorted by name
-app.get('/services', async (req, res) => {
+// POST /deployments — called by CI pipeline after each deploy
+app.post("/deployments", async (req, res) => {
   try {
-    const services = await Service.find().sort({ name: 1 });
-    res.json(services);
+    const doc = await Deployment.create(req.body);
+    res.status(201).json(doc);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch services', details: err.message });
+    res.status(400).json({ error: err.message });
   }
 });
 
-// POST /services — create a new service
-app.post('/services', async (req, res) => {
-  try {
-    const { name, status, note } = req.body;
-    const service = new Service({ name, status, note });
-    await service.save();
-    res.status(201).json(service);
-  } catch (err) {
-    res.status(400).json({ error: 'Failed to create service', details: err.message });
-  }
+// GET /deployments — paginated list with optional filters
+app.get("/deployments", async (req, res) => {
+  const { service, environment, status, page = 1, limit = 20 } = req.query;
+  const filter = {};
+  if (service)     filter.service     = service;
+  if (environment) filter.environment = environment;
+  if (status)      filter.status      = status;
+
+  const [docs, total] = await Promise.all([
+    Deployment.find(filter).sort({ timestamp: -1 }).skip((page - 1) * limit).limit(Number(limit)),
+    Deployment.countDocuments(filter),
+  ]);
+  res.json({ deployments: docs, total, page: Number(page), limit: Number(limit) });
 });
 
-// PATCH /services/:id — update status or note
-app.patch('/services/:id', async (req, res) => {
-  try {
-    const { status, note } = req.body;
-    const updates = { updatedAt: new Date() };
-    if (status !== undefined) updates.status = status;
-    if (note !== undefined) updates.note = note;
+// GET /deployments/stats — dashboard summary numbers
+app.get("/deployments/stats", async (req, res) => {
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-    const service = await Service.findByIdAndUpdate(
-      req.params.id,
-      updates,
-      { new: true, runValidators: true }
-    );
+  const [today, successToday, failedToday, allTime, avgDur, byService] = await Promise.all([
+    Deployment.countDocuments({ timestamp: { $gte: dayAgo } }),
+    Deployment.countDocuments({ timestamp: { $gte: dayAgo }, status: "success" }),
+    Deployment.countDocuments({ timestamp: { $gte: dayAgo }, status: "failed" }),
+    Deployment.countDocuments(),
+    Deployment.aggregate([{ $group: { _id: null, avg: { $avg: "$duration" } } }]),
+    Deployment.aggregate([
+      { $group: { _id: "$service", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 1 },
+    ]),
+  ]);
 
-    if (!service) return res.status(404).json({ error: 'Service not found' });
-    res.json(service);
-  } catch (err) {
-    res.status(400).json({ error: 'Failed to update service', details: err.message });
-  }
+  res.json({
+    today,
+    successToday,
+    failedToday,
+    successRate: today > 0 ? Math.round((successToday / today) * 100) : 0,
+    allTime,
+    avgDuration: avgDur[0] ? Math.round(avgDur[0].avg) : 0,
+    busiestService: byService[0]?._id || "—",
+  });
 });
 
-// DELETE /services/:id — delete a service
-app.delete('/services/:id', async (req, res) => {
-  try {
-    const service = await Service.findByIdAndDelete(req.params.id);
-    if (!service) return res.status(404).json({ error: 'Service not found' });
-    res.json({ message: 'Service deleted', id: req.params.id });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to delete service', details: err.message });
-  }
+// GET /services — distinct service names
+app.get("/services", async (_req, res) => {
+  const services = await Deployment.distinct("service");
+  res.json(services);
 });
 
-// ── Start server ─────────────────────────────────────────────────────────────
-const PORT = 5000;
-app.listen(PORT, () => console.log(`Status board API running on port ${PORT}`));
+// DELETE /deployments — clear all (useful for demo reset)
+app.delete("/deployments", async (_req, res) => {
+  await Deployment.deleteMany({});
+  res.json({ message: "All deployments cleared" });
+});
+
+// Health check
+app.get("/health", (_req, res) => res.json({ status: "ok" }));
+
+app.listen(5000, () => console.log("DeployBoard API running on :5000"));
