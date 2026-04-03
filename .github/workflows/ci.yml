@@ -99,3 +99,26 @@ jobs:
           git add k8s/
           git diff --staged --quiet || git commit -m "ci: update image tags to ${{ github.sha }}"
           git push
+
+      - name: Log deployment to DeployBoard
+        if: always()   # runs even if prior steps failed — so failures are recorded too
+        run: |
+          STATUS="success"
+          if [ "${{ job.status }}" != "success" ]; then
+            STATUS="failed"
+          fi
+
+          # Calculate duration from job start (GitHub provides this via context)
+          curl -s -X POST http://54.84.239.147:30001/deployments \
+            -H "Content-Type: application/json" \
+            -d '{
+              "service":     "${{ github.event.repository.name }}",
+              "environment": "production",
+              "sha":         "${{ github.sha }}",
+              "deployer":    "${{ github.actor }}",
+              "status":      "'"$STATUS"'",
+              "branch":      "${{ github.ref_name }}",
+              "message":     "${{ github.event.head_commit.message }}",
+              "duration":    ${{ env.DEPLOY_DURATION || 0 }}
+            }'
+          echo "✓ Deployment logged to DeployBoard"
