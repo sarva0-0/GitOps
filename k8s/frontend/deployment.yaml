@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: 740186512853.dkr.ecr.us-east-1.amazonaws.com/gitops-frontend:0dcc8db121d8c3c2c2f493b7b98213370df72d1b
+          image: 740186512853.dkr.ecr.us-east-1.amazonaws.com/gitops-frontend:ea6f1a04e34316df86a4336ccca9aa541a365978
           ports:
             - containerPort: 80
           env:
