@@ -1,4 +1,4 @@
-# DEVLOG — Full GitOps Pipeline
+# DEVLOG — Full GitOps Pipeline + DeployBoard
 
 This file documents every step of the build in order —
 what was done, why, what broke, and what we learned.
@@ -32,18 +32,6 @@ So before any infrastructure, before any code — the repo structure comes first
 - `.github/workflows/` — GitHub Actions pipeline YAML files
 - `monitoring/` — Prometheus + Grafana configuration
 
-**Commands:**
-```bash
-git clone https://github.com/sarva0-0/GitOps.git
-cd GitOps
-mkdir -p backend frontend infra k8s/backend k8s/frontend k8s/mongo \
-  .github/workflows monitoring
-touch backend/.gitkeep frontend/.gitkeep infra/.gitkeep \
-  k8s/backend/.gitkeep k8s/frontend/.gitkeep k8s/mongo/.gitkeep \
-  .github/workflows/.gitkeep monitoring/.gitkeep
-git add . && git commit -m "init: project structure" && git push origin main
-```
-
 ---
 
 ## Step 2 — Terraform (Infrastructure Provisioning)
@@ -56,13 +44,6 @@ Normally to create a server on AWS you log into a console and click through
 have no record of what you clicked. Terraform lets you describe what you want
 in a file, and it builds it. Run it again after a change — it only modifies
 what actually changed. This is called Infrastructure as Code (IaC).
-
-**Key concepts:**
-- **Provider** — the plugin connecting Terraform to AWS
-- **Resource** — a thing to create (EC2 instance, VPC, security group)
-- **Variables** — avoid hardcoding values like region or instance type
-- **Outputs** — values printed after apply (e.g. public IPs of your nodes)
-- **State file** — Terraform's memory of what it has built. Stored in S3.
 
 **What was provisioned:**
 - VPC `10.0.0.0/16` with DNS hostnames enabled
@@ -78,32 +59,11 @@ kubeadm requires minimum 2 vCPU and 2GB RAM per node.
 t3.micro (1 vCPU, 1GB) fails outright. t3.medium works but is tight.
 m7i-flex.large (2 vCPU, 8GB) gives comfortable headroom for the full stack.
 
-**Commands:**
-```bash
-cd infra/
-terraform init
-terraform plan -var="key_name=gitops-key"
-terraform apply -var="key_name=gitops-key"
-```
-
 ---
 
 ## Step 3 — kubeadm (Kubernetes Cluster Bootstrap)
 
 **What:** Turned 3 bare Ubuntu servers into a working Kubernetes cluster.
-
-**First principles — what is Kubernetes?**
-You have 3 servers and you want to run your app across them.
-Kubernetes is the system that decides which server runs what, restarts
-things when they crash, and lets containers talk to each other.
-kubeadm is the tool that sets Kubernetes up on raw servers.
-
-**Key concepts:**
-- **Control plane (master)** — the brain. Manages scheduling and state.
-  You never run your app here.
-- **Worker nodes** — where your actual app containers run
-- **CNI** — a network plugin that lets pods talk across nodes. We use Flannel.
-- **kubeconfig** — credentials file that lets kubectl talk to your cluster
 
 **What was done on all 3 nodes:**
 - Disabled swap (K8s requirement)
@@ -117,9 +77,6 @@ kubeadm is the tool that sets Kubernetes up on raw servers.
 - Configured kubectl (`~/.kube/config`)
 - Applied Flannel CNI
 - Saved the `kubeadm join` command for workers
-
-**What was done on both workers:**
-- Ran the `kubeadm join` command from master output
 
 **Verification:**
 ```bash
@@ -136,23 +93,11 @@ kubectl get nodes
 
 **What:** Containerised the app and pushed images to AWS ECR.
 
-**First principles — what is Docker?**
-Your app runs fine on your laptop. But on a fresh server it might break
-because of different OS versions, missing libraries, wrong Node version.
-A Docker image bundles your app with everything it needs to run — OS layer,
-runtime, dependencies. Same image runs identically everywhere.
-
-**First principles — what is ECR?**
-Docker Hub is a public image store. ECR is AWS's private version.
-Your K8s nodes (which are on AWS) can pull from ECR without extra auth setup
-once IAM roles are configured.
-
 **What was built:**
 - Backend Dockerfile: node:18-alpine, exposes port 5000
-- Frontend Dockerfile: multi-stage build — node:18-alpine compiles React,
+- Frontend Dockerfile: multi-stage — node:18-alpine builds React via Vite,
   nginx:alpine serves the static output. Final image has no Node.js at all.
 - Two ECR repos created: `gitops-backend`, `gitops-frontend`
-- Images tagged `:latest` and pushed manually to verify
 
 **Why multi-stage for frontend:**
 Stage 1 compiles React into static HTML/CSS/JS.
@@ -165,12 +110,6 @@ The final image is ~25MB instead of ~400MB.
 
 **What:** Automated the entire build on every push to main.
 
-**First principles — what is CI?**
-CI means every time code is pushed, a machine automatically builds it,
-tests it, and prepares it for deployment. No human manually runs build commands.
-GitHub Actions is GitHub's built-in CI system. Your workflow YAML lives in
-`.github/workflows/` and GitHub reads it automatically.
-
 **What the pipeline does on every push:**
 1. Checks if `infra/` files changed — if yes, runs Terraform apply
 2. Builds Docker image for backend, tags with commit SHA, pushes to ECR
@@ -178,24 +117,12 @@ GitHub Actions is GitHub's built-in CI system. Your workflow YAML lives in
 4. Updates `k8s/backend/deployment.yaml` and `k8s/frontend/deployment.yaml`
    with the new image URI + SHA
 5. Commits the updated manifests back to Git
-6. That commit is what ArgoCD will detect and sync
+6. Logs the deployment to DeployBoard via POST /deployments
 
 **Why commit SHA as the image tag:**
 Every image is traceable to an exact commit.
 If something breaks in production, you know exactly which commit caused it.
 `:latest` tags are dangerous — you never know what version is actually running.
-
-**Key fix applied:**
-The `sed` command that updates image tags must match the full ECR URI pattern,
-not just a placeholder. Once the placeholder is replaced once, it never appears
-again — so the pattern must match the existing URI on every subsequent push:
-```bash
-sed -i "s|image: 740186512853.dkr.ecr.us-east-1.amazonaws.com/gitops-backend:.*|image: <new-uri>|g"
-```
-
-**Incidents fixed in this step:**
-- GitHub Actions bot got 403 on git push — fixed with `contents: write`
-  permission + `token: ${{ secrets.GITHUB_TOKEN }}` in checkout step
 
 ---
 
@@ -203,32 +130,13 @@ sed -i "s|image: 740186512853.dkr.ecr.us-east-1.amazonaws.com/gitops-backend:.*|
 
 **What:** Wrote the YAML files that describe how the app runs in K8s.
 
-**First principles — what are manifests?**
-Kubernetes doesn't run containers directly. You give it a YAML file that says
-"I want 2 copies of this container, always keep them running, expose them on
-this port." Kubernetes makes it happen and keeps it that way.
-If a container crashes — K8s restarts it. If a node dies — K8s moves the
-container to another node. The manifest is the desired state declaration.
-
-**Key concepts:**
-- **Deployment** — run N copies of a container, keep them alive
-- **Service** — stable network address in front of pods
-  (pods are temporary and get new IPs on restart — Services stay fixed)
-- **StatefulSet** — like Deployment but for databases. Pods get stable names.
-- **NodePort** — exposes your app on a port on the node's public IP
-- **hostPath** — mounts a folder from the node's disk into the container
-
 **What was created:**
 - `k8s/backend/deployment.yaml` — 2 replicas, ECR image, MONGO_URI env var
 - `k8s/backend/service.yaml` — NodePort 30001
-- `k8s/frontend/deployment.yaml` — 2 replicas, ECR image, API_URL env var
+- `k8s/frontend/deployment.yaml` — 2 replicas, ECR image
 - `k8s/frontend/service.yaml` — NodePort 30002
 - `k8s/mongo/statefulset.yaml` — 1 replica, hostPath at /data/mongo
 - `k8s/mongo/service.yaml` — headless service (clusterIP: None)
-
-**Why headless service for MongoDB:**
-MongoDB doesn't need load balancing — there's one instance.
-A headless service lets pods reach it directly via DNS: `mongo:27017`.
 
 ---
 
@@ -237,12 +145,6 @@ A headless service lets pods reach it directly via DNS: `mongo:27017`.
 **What:** Installed ArgoCD and connected it to the repo so it auto-deploys
 any manifest change.
 
-**First principles — what is ArgoCD?**
-ArgoCD runs inside your cluster and watches a folder in your Git repo.
-Every few minutes it compares what's in Git against what's running in the cluster.
-If they differ — it syncs. If someone manually changes something in the cluster
-that doesn't match Git — it reverts it. Git always wins. This is GitOps.
-
 **What was done:**
 ```bash
 kubectl create namespace argocd
@@ -250,20 +152,18 @@ kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/st
 kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "NodePort"}}'
 ```
 
-ArgoCD Application pointing at this repo:
+ArgoCD Application config:
 ```yaml
 source:
   repoURL: https://github.com/sarva0-0/GitOps
   path: k8s
   directory:
-    recurse: true        # critical — without this ArgoCD ignores subdirectories
+    recurse: true
 syncPolicy:
   automated:
-    prune: true          # delete K8s resources removed from Git
-    selfHeal: true       # revert manual cluster changes back to Git state
+    prune: true
+    selfHeal: true
 ```
-
-**ArgoCD UI:** http://54.84.239.147:32657 (admin / get password from secret)
 
 ---
 
@@ -271,21 +171,6 @@ syncPolicy:
 
 **What:** Deployed monitoring stack via Helm.
 
-**First principles — what is Prometheus?**
-Every component in K8s exposes a `/metrics` endpoint with numbers about
-itself — CPU used, requests per second, errors. Prometheus hits all these
-endpoints every 15 seconds and stores the data.
-
-**What is Grafana?**
-Grafana connects to Prometheus and draws those numbers as graphs on dashboards.
-You get a visual overview of everything happening in the cluster.
-
-**What is Helm?**
-Helm is a package manager for Kubernetes. Like apt for Ubuntu but for K8s apps.
-`kube-prometheus-stack` is a Helm chart that installs Prometheus + Grafana +
-all the K8s-specific exporters in one command.
-
-**Commands:**
 ```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update
@@ -296,36 +181,58 @@ helm install prometheus prometheus-community/kube-prometheus-stack \
   --set prometheus.service.nodePort=30090 \
   --set grafana.service.type=NodePort \
   --set grafana.service.nodePort=30030 \
-  --set grafana.adminPassword=admin123 \
-  [... resource limit flags to fit on nodes]
+  --set grafana.adminPassword=admin123
 ```
-
-**Dashboards:**
-- Prometheus: http://54.84.239.147:30090 → Status → Targets
-- Grafana: http://54.84.239.147:30030 → Dashboards → K8s Compute Resources
 
 ---
 
-## Step 9 — End-to-End Verify
+## Step 9 — DeployBoard App
 
-**What:** Proved the full GitOps loop works by pushing a real code change
-and watching it flow all the way to production automatically.
+**What:** Replaced the placeholder status board with DeployBoard — a real-time
+deployment tracking dashboard that makes the GitOps pipeline observable.
 
-**Change made:** Added `/version` endpoint to `backend/server.js`
+**Backend (Express + MongoDB):**
+- `POST /deployments` — called by CI pipeline after every deploy
+- `GET /deployments` — paginated list with filters (service, env, status)
+- `GET /deployments/stats` — aggregate stats: today's count, success rate, avg duration
+- `GET /services` — distinct service names
+- `DELETE /deployments` — clear all (demo reset)
+
+**Frontend (React + Vite):**
+- Stat cards — deploys today, success rate, avg build time, busiest service, all-time
+- 7-day activity bar chart — green = all passed, red = any failed
+- Success rate SVG ring — visual pass/fail ratio
+- Environment breakdown — progress bars for prod/staging/dev
+- Deployment feed — every deploy with full details, filtered and sortable
+- Auto-refreshes every 8 seconds
+
+**Pipeline integration — one curl at the end of ci.yml:**
+```bash
+curl -s -X POST http://54.84.239.147:30001/deployments \
+  -H "Content-Type: application/json" \
+  -d '{"service":"GitOps","environment":"production","sha":"$SHA",...}'
+```
+
+**Why this app fits the pipeline perfectly:**
+The pipeline does deployments. DeployBoard records and visualises them.
+It's the observability layer that makes everything that just happened visible.
+Every push to main produces a new entry in the dashboard — the pipeline
+demonstrates itself through the app it deploys.
+
+---
+
+## Step 10 — End-to-End Verify
+
+**Change made:** Updated App.jsx with full DeployBoard UI
 
 **What happened:**
 1. Pushed to main → GitHub Actions triggered
-2. New Docker image built, tagged `807632779844c6744f3f5c093c4bd0c03ffd3208`
-3. Image pushed to ECR
-4. `k8s/backend/deployment.yaml` updated with new image tag
-5. That commit pushed back to repo by Actions bot
-6. ArgoCD detected manifest change, synced to cluster
-7. Rolling restart — old backend pods terminated, new ones came up
-8. Verified live:
-```bash
-curl http://54.84.239.147:30001/version
-# {"version":"v2","status":"live"}
-```
+2. New Docker images built and pushed to ECR with commit SHA
+3. k8s manifests updated with new image tag
+4. ArgoCD detected change, synced to cluster
+5. Rolling restart — old pods terminated, new ones came up
+6. Deployment automatically logged to DeployBoard
+7. Dashboard showed new deploy in real time
 
 **GitOps loop confirmed end to end.**
 
@@ -333,46 +240,31 @@ curl http://54.84.239.147:30001/version
 
 ## Incidents Log
 
-These are the real problems hit during the build.
-This is the most valuable section — understanding why things broke
-teaches more than understanding why things worked.
-
 ---
 
 ### Incident 1 — Terraform firing on every push
 
-**Problem:** CI pipeline was running `terraform apply` on every push,
-causing failures and email spam.
+**Problem:** CI pipeline was running `terraform apply` on every push.
 
-**Root cause:** `terraform apply` was inside the main CI job with no condition.
-Every push triggered a full infra apply even when only app code changed.
-
-**Fix:** Added a `git diff` check — Terraform only runs if files inside
-`infra/` actually changed:
+**Fix:** Added a `git diff` check:
 ```bash
 git diff --name-only HEAD~1 HEAD | grep '^infra/' && \
   echo "changed=true" >> $GITHUB_OUTPUT || \
   echo "changed=false" >> $GITHUB_OUTPUT
 ```
-Each Terraform step got `if: steps.infra_check.outputs.changed == 'true'`
 
-**Lesson:** CI/CD doesn't mean "run everything on every push blindly."
-Infra changes are rare, app changes are frequent. Treat them differently.
+**Lesson:** Treat infra changes and app changes differently in CI.
 
 ---
 
 ### Incident 2 — GitHub Actions 403 on git push
 
-**Problem:** Pipeline built and pushed images fine but failed when trying
-to commit the updated manifests back to the repo.
-Error: `remote: Permission to sarva0-0/GitOps.git denied to github-actions[bot]`
-
-**Root cause:** GitHub Actions bot has read-only access by default.
-Write access must be explicitly granted in two places.
+**Problem:** Pipeline failed when trying to commit manifests back.
+Error: `remote: Permission to sarva0-0/GitOps.git denied`
 
 **Fix:**
-1. Repo Settings → Actions → General → Workflow permissions → Read and write
-2. Add to the job in ci.yml:
+1. Repo Settings → Actions → Workflow permissions → Read and write
+2. Add to ci.yml:
 ```yaml
 permissions:
   contents: write
@@ -382,46 +274,25 @@ steps:
       token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-**Lesson:** GitHub's security model is opt-in for write access.
-Both the repo setting AND the workflow YAML need to be set — one alone is not enough.
+**Lesson:** GitHub's write access is opt-in in two places — both must be set.
 
 ---
 
 ### Incident 3 — ArgoCD Synced + Healthy but zero pods
 
-**Problem:** ArgoCD showed `Synced` and `Healthy` but `kubectl get pods -n default`
-returned nothing.
+**Problem:** ArgoCD showed Synced and Healthy but no pods existed.
 
-**Root cause:** ArgoCD by default only reads manifests at the root of the path
-you give it. Our manifests were in subdirectories (`k8s/backend/`, `k8s/frontend/`).
-ArgoCD found nothing at the root of `k8s/`, reported success, created nothing.
+**Fix:** Add `directory.recurse: true` to the Application spec.
 
-**Fix:** Add `directory.recurse: true` to the Application spec:
-```yaml
-source:
-  path: k8s
-  directory:
-    recurse: true
-```
-
-**Lesson:** ArgoCD not recursing is intentional — it lets monorepos have
-multiple apps in different folders without them interfering. You opt into
-recursion explicitly.
+**Lesson:** ArgoCD doesn't recurse subdirectories by default. Opt in explicitly.
 
 ---
 
 ### Incident 4 — MongoDB stuck Pending forever
 
-**Problem:** `mongo-0` pod stayed in `Pending` status indefinitely.
-`kubectl describe pod mongo-0` showed it could not bind a PersistentVolumeClaim.
+**Problem:** `mongo-0` pod stayed Pending — PVC could not be bound.
 
-**Root cause:** A PVC is a request for storage. On managed Kubernetes (EKS, GKE)
-there is a cloud storage provisioner that fulfils PVC requests automatically.
-On bare kubeadm there is no provisioner — the PVC sits in `Pending` forever
-with nothing to fulfil it.
-
-**Fix:** Replaced the PVC with a `hostPath` volume — mounts a directory
-directly from the node's disk:
+**Fix:** Replaced PVC with hostPath volume:
 ```yaml
 volumes:
   - name: mongo-storage
@@ -430,106 +301,130 @@ volumes:
       type: DirectoryOrCreate
 ```
 
-**Lesson:** Managed K8s and bare kubeadm behave differently for storage.
-hostPath is fine for dev/learning. In production you would use a proper
-storage class (EBS CSI driver on AWS).
+**Lesson:** Bare kubeadm has no storage provisioner. Use hostPath for dev.
 
 ---
 
 ### Incident 5 — ImagePullBackOff on worker nodes
 
-**Problem:** Pods stuck in `ImagePullBackOff`. K8s could not pull images from ECR.
+**Problem:** Pods stuck pulling images from ECR.
 
-**Root cause (part 1):** IAM instance profile was attached to worker nodes but
-containerd (the container runtime) doesn't use IAM roles automatically.
-It needs explicit credentials configured in `/etc/containerd/config.toml`.
+**Root causes:**
+- containerd doesn't use IAM roles automatically — needs explicit credentials
+- ECR tokens expire every 12 hours
+- AWS CLI wasn't installed on master
 
-**Root cause (part 2):** AWS ECR tokens expire every 12 hours.
-After the cluster was left running overnight, all nodes needed token refresh.
-
-**Root cause (part 3):** AWS CLI was not installed on the master node,
-so it could never generate a fresh ECR token. Workers had it, master didn't.
-
-**Fix:** On every node that needs to pull from ECR:
+**Fix:** On every node:
 ```bash
-sudo apt-get install -y awscli
 TOKEN=$(aws ecr get-login-password --region us-east-1)
-# Write token to containerd config using single-quote heredoc to prevent
-# shell expansion, then sed-replace the placeholder safely
-sudo tee /etc/containerd/config.toml > /dev/null <<'EOF'
-...
-        password = "REPLACE_TOKEN"
-EOF
-sudo sed -i "s|REPLACE_TOKEN|$TOKEN|g" /etc/containerd/config.toml
+sudo sed -i "s|password = \".*\"|password = \"$TOKEN\"|" /etc/containerd/config.toml
 sudo systemctl restart containerd
 ```
 
-**Why single-quote heredoc:** ECR tokens contain special characters.
-Double-quote heredoc (`<<EOF`) expands variables inside — if `$TOKEN` contains
-special chars it corrupts the file. Single-quote heredoc (`<<'EOF'`) is literal.
-
-**Lesson:** IAM roles control what the EC2 *instance* can do.
-containerd is a separate process that doesn't inherit IAM automatically.
-In production this is solved with `amazon-ecr-credential-helper` running
-as a DaemonSet that auto-refreshes tokens cluster-wide.
+**Lesson:** IAM roles control EC2 access. containerd is separate and needs
+its own credentials. In production, use amazon-ecr-credential-helper.
 
 ---
 
 ### Incident 6 — Disk pressure causing pod evictions
 
-**Problem:** Pods getting evicted across all nodes. Monitoring pods especially
-kept getting evicted in a loop — Grafana alone had 15+ evicted copies.
+**Problem:** Pods getting evicted across all nodes.
 
-**Root cause:** Default EC2 EBS volume is 8GB. After pulling multiple large
-Docker images (Node.js, nginx, MongoDB, Prometheus, Grafana, ArgoCD components)
-the disks hit ~74% usage. K8s evicts pods when disk usage crosses ~85%.
-
-**Fix:** Resized all 3 EBS volumes from 8GB to 20GB via AWS console,
-then expanded the partition on each node:
+**Fix:** Resized EBS from 8GB to 20GB and expanded partition:
 ```bash
 sudo growpart /dev/xvda 1
 sudo resize2fs /dev/xvda1
 ```
 
-**Lesson:** Default EBS size is not enough for a full K8s stack with monitoring.
-Always provision at least 20GB for nodes running multiple workloads.
-Disk pressure is harder to debug than memory pressure because pods evict
-silently without obvious error messages.
+**Lesson:** Default 8GB EBS is not enough for a full K8s stack with monitoring.
+Always provision at least 20GB.
 
 ---
 
 ### Incident 7 — sed pattern not updating image tags after first run
 
-**Problem:** Pipeline ran green, showed it updated the manifest, but pods
-kept running the old image. The `deployment.yaml` still showed the old SHA.
+**Problem:** Pipeline ran green but pods kept running old image.
 
-**Root cause:** The original sed command replaced `IMAGE_TAG_BACKEND` with
-a real ECR URI. That worked once. On subsequent runs, `IMAGE_TAG_BACKEND`
-no longer existed in the file — it had been replaced. So sed found nothing
-to replace and silently did nothing. The manifest stayed on the old SHA.
-
-**Fix:** Changed the sed pattern to match the full ECR URI with a wildcard
-for the tag portion:
+**Fix:** Changed sed pattern to match full ECR URI with wildcard:
 ```bash
-sed -i "s|image: 740186512853.dkr.ecr.us-east-1.amazonaws.com/gitops-backend:.*|image: <new-uri>|g"
+sed -i "s|image: 740186512853.dkr.ecr.us-east-1.amazonaws.com/gitops-frontend:.*|image: <new>|g"
 ```
-The `.*` matches any existing tag — so every push updates the tag correctly
-regardless of what the current tag is.
 
-**Lesson:** Sed replacements that only work once are a silent failure mode.
-Always test your pipeline end-to-end with a second push, not just the first.
+**Lesson:** Test your pipeline with a second push, not just the first.
+
+---
+
+### Incident 8 — ArgoCD repo-server crashed, sync stopped
+
+**Problem:** ArgoCD showed `Unknown` sync status.
+Error: `dial tcp 10.105.176.88:8081: connect: connection refused`
+
+**Root cause:** ArgoCD repo-server pod crashed after cluster instability.
+
+**Fix:**
+```bash
+kubectl rollout restart deployment argocd-repo-server -n argocd
+```
+
+**Lesson:** ArgoCD components can crash independently. repo-server is the
+one that fetches and renders manifests — without it nothing syncs.
+
+---
+
+### Incident 9 — Blank screen despite backend working
+
+**Problem:** Frontend served 200 OK but showed a black screen with no UI.
+
+**Root causes (three separate issues):**
+1. Old placeholder `App.jsx` was in the repo — the new full UI code was never committed
+2. Google Fonts CDN was blocked on the school network — fonts never loaded,
+   text rendered invisible (dark on dark)
+3. `VITE_API_URL` build arg was named `REACT_APP_API_URL` in ci.yml —
+   wrong name for Vite, so the API URL defaulted to localhost
+
+**Fix:**
+1. Replaced App.jsx with full DeployBoard UI
+2. Switched font CDN from Google to Bunny Fonts (network-unrestricted mirror)
+3. Hardcoded API URL directly in App.jsx as fallback
+4. Fixed build arg name in ci.yml to `VITE_API_URL`
+
+**Lesson:** Vite and Create React App use different env variable prefixes.
+`REACT_APP_` is CRA. `VITE_` is Vite. Using the wrong one silently produces
+no error — the variable just evaluates to undefined.
+
+---
+
+### Incident 10 — New image built but old pods still serving old JS
+
+**Problem:** Pipeline ran green, new image in ECR, but browser still showed old UI.
+
+**Root cause:** ArgoCD had not synced — it detected the manifest change but
+the pod rollout used the old image because `kubectl rollout restart` restarts
+pods with the current spec, not the new one if ArgoCD hasn't applied it yet.
+
+**Fix:** Forced image directly:
+```bash
+kubectl set image deployment/frontend \
+  frontend=740186512853.dkr.ecr.us-east-1.amazonaws.com/gitops-frontend:<new-sha> \
+  -n default
+```
+
+**Lesson:** `kubectl rollout restart` restarts pods with whatever image is in
+the current deployment spec. If ArgoCD hasn't applied the new spec yet,
+restart does nothing useful. Force the image directly or wait for ArgoCD to sync.
 
 ---
 
 ## Final State
+
 ```
 Cluster:    3 nodes healthy (master + 2 workers)
 App pods:   5/5 Running (2 backend, 2 frontend, 1 mongo)
-Monitoring: 10/10 Running (Prometheus, Grafana, Alertmanager, exporters)
+Monitoring: Running (Prometheus, Grafana, Alertmanager)
 ArgoCD:     Synced + Healthy
 Pipeline:   Green on every push to main
-App:        http://54.84.239.147:30002 — live
-API:        http://54.84.239.147:30001/version → {"version":"v2","status":"live"}
+App:        http://54.84.239.147:30002 — DeployBoard live
+API:        http://54.84.239.147:30001/deployments/stats — live data
 ```
 
 **Project complete.**
