@@ -83,7 +83,7 @@ jobs:
       - name: Build and push frontend
         run: |
           docker build \
-            --build-arg REACT_APP_API_URL=http://54.84.239.147:30001 \
+            --build-arg VITE_API_URL=http://54.84.239.147:30001\
             -t ${{ env.ECR_FRONTEND }}:${{ github.sha }} ./frontend
           docker push ${{ env.ECR_FRONTEND }}:${{ github.sha }}
 
